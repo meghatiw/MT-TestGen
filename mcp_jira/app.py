@@ -14,37 +14,37 @@ JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
 
 auth = HTTPBasicAuth(JIRA_EMAIL, JIRA_API_TOKEN)
 
-@app.get("/context")
-def get_jira_context(jira_url: str = Query(...)):
-    """
-    Example jira_url:
-    https://megha1312.atlassian.net/browse/SCRUM-6
-    """
+from fastapi import FastAPI, HTTPException
+import requests, os
 
-    issue_key = jira_url.rstrip("/").split("/")[-1]
+app = FastAPI()
+
+JIRA_BASE_URL = os.getenv("JIRA_BASE_URL")
+JIRA_EMAIL = os.getenv("JIRA_EMAIL")
+JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
+
+@app.get("/context")
+def get_jira_context(jira_url: str):
+    if not jira_url:
+        raise HTTPException(status_code=400, detail="jira_url is required")
+
+    issue_key = jira_url.split("/")[-1]
 
     api_url = f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}"
 
     response = requests.get(
         api_url,
-        auth=auth,
+        auth=(JIRA_EMAIL, JIRA_API_TOKEN),
         headers={"Accept": "application/json"}
     )
 
     response.raise_for_status()
-    issue = response.json()
-
-    fields = issue["fields"]
+    data = response.json()
 
     return {
-        "storyId": issue_key,
-        "summary": fields.get("summary"),
-        "description": extract_text(fields.get("description")),
-        "acceptanceCriteria": extract_acceptance_criteria(fields.get("description")),
-        "status": fields["status"]["name"],
-        "priority": fields["priority"]["name"] if fields.get("priority") else None,
-        "labels": fields.get("labels", []),
-        "components": [c["name"] for c in fields.get("components", [])]
+        "storyId": data["key"],
+        "summary": data["fields"]["summary"],
+        "description": data["fields"]["description"]
     }
 
 

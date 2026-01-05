@@ -51,11 +51,26 @@ def extract_selectors(repo_path: str) -> dict:
 
     for root, _, files in os.walk(repo_path):
         for file in files:
-            if file.endswith((".jsx", ".tsx")):
+            if file.endswith((".jsx", ".tsx", ".js", ".ts", ".html")):
                 file_path = os.path.join(root, file)
+
                 with open(file_path, encoding="utf-8", errors="ignore") as f:
                     content = f.read()
+
                     extract_from_file(content, selectors)
+
+                    # also detect className selectors
+                    class_matches = re.findall(r'class(Name)?=["\']([^"\']+)["\']', content)
+                    for _, cls in class_matches:
+                        cls_val = cls.split(" ")[0]   # first class only
+                        selectors[f"class:{cls_val}"] = f".{cls_val}"
+
+                    # detect button text
+                    btn_texts = re.findall(r'<button[^>]*>([^<]+)</button>', content)
+                    for txt in btn_texts:
+                        cleaned = txt.strip()
+                        if cleaned:
+                            selectors[f"text:{cleaned}"] = f'button:contains("{cleaned}")'
 
     return selectors
 

@@ -1,24 +1,78 @@
-from fastapi.responses import HTMLResponse
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
 from orchestrator.agent import TestGenerationAgent
+
 
 app = FastAPI(title="Agentic AI Test Generator")
 
-class GenerateRequest(BaseModel):
-    appUrl: str
-    appRepo: str
-    jiraUrl: str
-    cucumberRepo: str
+# ---------- CORS ----------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
+
+# ---------- REQUEST MODEL ----------
+class GenerateRequest(BaseModel):
+    jiraUrl: str
+    uiRepo: str = ""
+    e2eRepo: str = ""
+
+
+# ---------- HEALTH ----------
 @app.get("/health")
 def health():
     return {"status": "UP"}
 
+
+# ---------- GENERATE ----------
 @app.post("/generate")
 def generate(req: GenerateRequest):
-    return TestGenerationAgent().run(req.dict())
+    result = TestGenerationAgent().run(req.dict())
 
+    # If agent returns dict already
+    if isinstance(result, dict):
+        return result
+
+    # Fallback parsing text response
+    feature = ""
+    steps = ""
+    validation = ""
+
+    if "Feature" in result:
+        parts = result.split("Step Definitions")
+        feature = parts[0]
+
+        if len(parts) > 1:
+            step_and_val = parts[1].split("Validation")
+            steps = step_and_val[0]
+
+            if len(step_and_val) > 1:
+                validation = step_and_val[1]
+
+    return {
+        "generatedArtifacts": {
+            "feature": feature.strip(),
+            "steps": steps.strip()
+        },
+        "validationReport": {
+            "status": "UNKNOWN",
+            "details": validation.strip()
+        }
+    }
+
+
+# ---------- UI ----------
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """
@@ -29,7 +83,7 @@ def home():
   <style>
     body { font-family: Arial; margin: 40px; }
     input, textarea, button { width: 100%; margin: 10px 0; padding: 8px; }
-    pre { background: #f4f4f4; padding: 15px; white-space: pre-wrap; }
+    textarea { height: 160px; white-space: pre; }
     .pass { color: green; font-weight: bold; }
     .fail { color: red; font-weight: bold; }
   </style>
@@ -38,33 +92,36 @@ def home():
 
 <h2>Agentic AI – Automated Test Case Generator</h2>
 
-<label>Application URL</label>
-<input id="appUrl" placeholder="http://app-url" />
-
 <label>JIRA Story URL</label>
-<input id="jiraUrl" placeholder="http://jira-story" />
+<input id="jiraUrl" placeholder="https://megha-tiwari.atlassian.net/browse/KAN-1">
 
-<label>Cucumber Repo URL</label>
-<input id="cucumberRepo" placeholder="http://bdd-repo" />
+<label>UI Repo (optional)</label>
+<input id="uiRepo" placeholder="https://github.com/.../ui.git">
+
+<label>E2E Repo (optional)</label>
+<input id="e2eRepo" placeholder="https://github.com/.../tests.git">
 
 <button onclick="generate()">Generate Test Cases</button>
 
-<h3>Generated Artifacts</h3>
-<pre id="output"></pre>
+<h3>Feature File</h3>
+<textarea id="feature"></textarea>
 
-<h3>Validation Status</h3>
-<div id="validation"></div>
+<h3>Step Definitions</h3>
+<textarea id="steps"></textarea>
+
+<h3>Validation</h3>
+<textarea id="validation"></textarea>
 
 <script>
 async function generate() {
-  document.getElementById("output").textContent = "Generating...";
-  document.getElementById("validation").textContent = "";
+  document.getElementById("feature").value = "Generating...";
+  document.getElementById("steps").value = "";
+  document.getElementById("validation").value = "";
 
   const payload = {
-    appUrl: document.getElementById("appUrl").value,
-    appRepo: "",
     jiraUrl: document.getElementById("jiraUrl").value,
-    cucumberRepo: document.getElementById("cucumberRepo").value
+    uiRepo: document.getElementById("uiRepo").value,
+    e2eRepo: document.getElementById("e2eRepo").value
   };
 
   const res = await fetch("/generate", {
@@ -75,13 +132,17 @@ async function generate() {
 
   const data = await res.json();
 
-  document.getElementById("output").textContent =
-    data.generatedArtifacts || JSON.stringify(data, null, 2);
+  if (data.generatedArtifacts) {
+    document.getElementById("feature").value =
+      data.generatedArtifacts.feature || "";
+
+    document.getElementById("steps").value =
+      data.generatedArtifacts.steps || "";
+  }
 
   if (data.validationReport) {
-    const status = data.validationReport.status;
-    document.getElementById("validation").innerHTML =
-      `<span class="${status === 'PASS' ? 'pass' : 'fail'}">${status}</span>`;
+    document.getElementById("validation").value =
+      data.validationReport.details || "";
   }
 }
 </script>
@@ -89,4 +150,3 @@ async function generate() {
 </body>
 </html>
 """
-
