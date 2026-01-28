@@ -1,27 +1,18 @@
 import requests
 import re
+from mcp_critic.app import CriticAgent
 from orchestrator.llm import call_llm
-import textwrap
 
 
 class TestGenerationAgent:
-    """
-    Agent Orchestrator
-
-    Responsibilities:
-    - Fetch context from MCP services
-    - Build high-quality prompt
-    - Call LLM
-    - Validate selectors against actual UI
-    """
 
     # ======================================================
-    # Public entry point
+    # MAIN ENTRY
     # ======================================================
     def run(self, payload: dict):
         try:
             # ------------------------------
-            # 1. Fetch JIRA context
+            # JIRA context
             # ------------------------------
             jira_ctx = self._safe_get(
                 "http://localhost:8002/context",
@@ -29,55 +20,70 @@ class TestGenerationAgent:
             )
 
             # ------------------------------
-            # 2. Fetch UI selector context
+            # UI selectors context
             # ------------------------------
             ui_ctx = self._safe_get(
                 "http://localhost:8001/context",
                 {"repo_url": payload["uiRepo"]}
             )
 
-            # ------------------------------
-            # SAFE GUARD RAIL
-            # If no selectors → stop immediately
-            # ------------------------------
             ui_elements = ui_ctx.get("elements") or {}
 
+            # HARD STOP if no selectors
             if not ui_elements:
                 return {
                     "status": "ERROR",
-                    "message": (
-                        "UI selectors unavailable. "
-                        "Cannot safely generate test automation."
-                    )
+                    "message": "UI selectors unavailable. Cannot safely generate test automation."
                 }
 
             # ------------------------------
-            # 3. Fetch existing E2E repo context
+            # (Optional) E2E repo context
             # ------------------------------
-            git_ctx = self._safe_get(
+            _ = self._safe_get(
                 "http://localhost:8004/context",
                 {"repo_url": payload["e2eRepo"]}
             )
 
-            # ------------------------------
-            # 4. Build LLM prompt
-            # ------------------------------
-            prompt = self._build_prompt(jira_ctx, ui_ctx, git_ctx)
+            # ==================================================
+            # STEP 1: GHERKIN GENERATION (LLM)
+            # ==================================================
+            gherkin_prompt = self._build_gherkin_prompt(jira_ctx, ui_ctx)
+            gherkin = call_llm(gherkin_prompt)
+            print("\n===== GHERKIN OUTPUT =====\n", gherkin)
 
-            # ------------------------------
-            # 5. Generate artifacts
-            # ------------------------------
-            llm_output = call_llm(prompt)
+            # ==================================================
+            # STEP 2: SELENIUM GENERATION (LLM)
+            # ==================================================
+            selenium_prompt = self._build_selenium_prompt(gherkin, ui_ctx)
+            selenium = call_llm(selenium_prompt)
 
-            # ------------------------------
-            # 6. Validate output
-            # ------------------------------
-            validation = self._validate_against_ui(llm_output, ui_ctx)
+            print("\n===== SELENIUM OUTPUT =====\n", selenium)
+
+            # ==================================================
+            # VALIDATION (Selectors)
+            # ==================================================
+            validation = self._validate_against_ui(selenium, ui_ctx)
+
+            critic = CriticAgent()
+            review = critic.review(selenium, validation)
+
+            # Retry once if critic allows
+            if review.get("can_retry"):
+                refined_prompt = selenium_prompt + (
+                    "\n\nIMPORTANT: Fix selector issues and regenerate. "
+                    "Do NOT invent selectors."
+                )
+                selenium = call_llm(refined_prompt)
+
+                validation = self._validate_against_ui(selenium, ui_ctx)
 
             return {
                 "status": "SUCCESS",
                 "story": jira_ctx.get("storyId"),
-                "generatedArtifacts": llm_output,
+                "generatedArtifacts": {
+                    "feature": gherkin.strip(),
+                    "steps": selenium.strip()
+                },
                 "validationReport": validation
             }
 
@@ -88,129 +94,75 @@ class TestGenerationAgent:
             }
 
     # ======================================================
-    # MCP communication helper
+    # SAFE HTTP GET
     # ======================================================
     def _safe_get(self, url: str, params: dict):
-        response = requests.get(url, params=params, timeout=30)
+        resp = requests.get(url, params=params, timeout=30)
 
-        if response.status_code != 200:
+        if resp.status_code != 200:
             raise Exception(
-                f"MCP error at {url} | "
-                f"Status: {response.status_code} | "
-                f"Response: {response.text}"
+                f"MCP error at {url} | Status {resp.status_code} | {resp.text}"
             )
 
-        if not response.text.strip():
+        if not resp.text.strip():
             raise Exception(f"Empty response from MCP at {url}")
 
-        try:
-            return response.json()
-        except Exception:
-            raise Exception(
-                f"Non-JSON response from MCP at {url}: {response.text}"
-            )
+        return resp.json()
 
     # ======================================================
-    # Prompt construction
+    # PROMPT: GHERKIN ONLY
     # ======================================================
-    def _build_prompt(self, jira: dict, ui: dict, git: dict) -> str:
-        return textwrap.dedent(f"""
-        You are generating UI automation that MUST run on the actual Megha Bank React UI.
+    def _build_gherkin_prompt(self, jira: dict, ui: dict):
+        return f"""
+Generate ONLY a Gherkin feature file.
 
-        ==================================================
-        CONTEXT: JIRA STORY
-        ==================================================
-        {jira}
+STRICT RULES:
+- Output ONLY Gherkin
+- No step definitions
+- No explanations
+- Only visible UI actions
+- Every step MUST reference a selector from UI context
 
-        ==================================================
-        REAL UI SELECTORS (GROUND TRUTH)
-        ==================================================
-        You may ONLY use selectors from this list:
+JIRA STORY:
+{jira}
 
-        {ui.get("elements")}
+ALLOWED UI SELECTORS:
+{ui.get("elements")}
 
-        If you do NOT see a selector here, DO NOT invent it.
-
-        ==================================================
-        ABSOLUTE RESTRICTIONS
-        ==================================================
-        ==================================================
-        DO NOT DO THESE
-        ==================================================
-
-        X Do NOT invent URLs
-        X Do NOT open browsers
-        X Do NOT add placeholders
-        X Do NOT use xpath
-        X Do NOT use UI_CONTEXT
-        X Do NOT create fake messages
-        X Do NOT use contains(), text(), aria assumptions
-        X Do NOT assume error messages (like "Insufficient Balance")
-        X Do NOT assert text unless UI context explicitly provides it
-
-
-        ==================================================
-        WHAT TO GENERATE
-        ==================================================
-
-        ### Feature File (Gherkin)
-
-        Rules:
-        - every step must reference a real UI element
-        - UI navigation only (no backend rules)
-        - no vague text like:
-          "user logs in", "system processes", "generic success"
-
-        GOOD:
-            When I click the ".btn" button
-
-        BAD:
-            When user initiates transaction
-
-        ==================================================
-        ### Step Definitions (Java)
-
-        Every locator MUST be in EXACT form:
-
-        driver.findElement(
-            By.cssSelector("<selector-from-ui-context>")
-        );
-
-        If selector unavailable, write:
-
-        # Step skipped — selector not available
-
-        Do NOT invent anything.
-
-        ==================================================
-        IF UI SELECTORS ARE EMPTY
-        Return ONLY:
-
-        "UI selectors unavailable. Cannot safely generate test automation."
-        """)
-
-
-
+If a selector is missing, SKIP the step.
+"""
 
     # ======================================================
-    # Validation engine
+    # PROMPT: SELENIUM ONLY
+    # ======================================================
+    def _build_selenium_prompt(self, gherkin: str, ui: dict):
+        return f"""
+Generate Selenium Java Step Definitions for the following Gherkin.
+
+STRICT RULES:
+- Output ONLY Java code
+- Selenium + Cucumber
+- Use By.cssSelector ONLY
+- Use ONLY selectors from UI context
+- Do NOT invent selectors
+- If selector missing, add comment:
+  // Step skipped — selector not available
+
+Gherkin:
+{gherkin}
+
+ALLOWED UI SELECTORS:
+{ui.get("elements")}
+"""
+
+    # ======================================================
+    # VALIDATION
     # ======================================================
     def _validate_against_ui(self, llm_output: str, ui_ctx: dict):
-        """
-        Validate ONLY selectors that are actually used in Selenium calls.
-
-        We only consider selectors inside:
-
-            By.cssSelector("<selector>")
-        """
         allowed = set(ui_ctx.get("elements", {}).values())
 
-        # Extract ONLY real selectors passed to cssSelector(...)
         used = set(
-            re.findall(
-                r'By\.cssSelector\("([^"]+)"\)',
-                llm_output
-            )
+            re.findall(r'By\.cssSelector\("([^"]+)"\)', llm_output)
         )
 
         invalid = list(used - allowed)

@@ -1,29 +1,36 @@
-from groq import Groq
-import os
-from dotenv import load_dotenv
+import requests
+import json
 
-load_dotenv()
+OLLAMA_URL = "http://localhost:11434/api/generate"
+MODEL = "deepseek-coder:6.7b"
 
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+SYSTEM_PROMPT = (
+    "You are a senior QA automation engineer. "
+    "You generate Cucumber Gherkin scenarios and Selenium Java step definitions. "
+    "You STRICTLY follow provided UI selectors and context. "
+    "You NEVER invent selectors, messages, URLs, or logic. "
+    "If something is missing, you explicitly skip it."
+)
 
 def call_llm(prompt: str) -> str:
-    response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a senior QA automation engineer. "
-                    "You generate Cucumber Gherkin scenarios and Selenium Java step definitions. "
-                    "You strictly follow given context and avoid hallucination."
-                )
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        temperature=0.2,
-        max_tokens=1500
+    payload = {
+        "model": MODEL,
+        "prompt": f"{SYSTEM_PROMPT}\n\n{prompt}",
+        "stream": False,
+        "options": {
+            "temperature": 0.2,
+            "top_p": 0.9
+        }
+    }
+
+    response = requests.post(
+        OLLAMA_URL,
+        json=payload,
+        timeout=300
     )
-    return response.choices[0].message.content
+
+    if response.status_code != 200:
+        raise Exception(f"Ollama LLM error: {response.text}")
+
+    data = response.json()
+    return data.get("response", "").strip()

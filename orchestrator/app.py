@@ -2,13 +2,20 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Dict, Any
 
 from orchestrator.agent import TestGenerationAgent
 
 
+# ======================================================
+# FASTAPI APP
+# ======================================================
 app = FastAPI(title="Agentic AI Test Generator")
 
-# ---------- CORS ----------
+
+# ======================================================
+# CORS
+# ======================================================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -22,57 +29,39 @@ app.add_middleware(
 )
 
 
-# ---------- REQUEST MODEL ----------
+# ======================================================
+# REQUEST MODEL
+# ======================================================
 class GenerateRequest(BaseModel):
     jiraUrl: str
     uiRepo: str = ""
     e2eRepo: str = ""
 
 
-# ---------- HEALTH ----------
+# ======================================================
+# HEALTH CHECK
+# ======================================================
 @app.get("/health")
 def health():
     return {"status": "UP"}
 
 
-# ---------- GENERATE ----------
+# ======================================================
+# GENERATE TEST CASES
+# ======================================================
 @app.post("/generate")
-def generate(req: GenerateRequest):
+def generate(req: GenerateRequest) -> Dict[str, Any]:
+    """
+    End-to-end generation pipeline:
+    Jira → Gherkin (LLM) → Selenium (LLM) → Validation
+    """
     result = TestGenerationAgent().run(req.dict())
-
-    # If agent returns dict already
-    if isinstance(result, dict):
-        return result
-
-    # Fallback parsing text response
-    feature = ""
-    steps = ""
-    validation = ""
-
-    if "Feature" in result:
-        parts = result.split("Step Definitions")
-        feature = parts[0]
-
-        if len(parts) > 1:
-            step_and_val = parts[1].split("Validation")
-            steps = step_and_val[0]
-
-            if len(step_and_val) > 1:
-                validation = step_and_val[1]
-
-    return {
-        "generatedArtifacts": {
-            "feature": feature.strip(),
-            "steps": steps.strip()
-        },
-        "validationReport": {
-            "status": "UNKNOWN",
-            "details": validation.strip()
-        }
-    }
+    return result
 
 
-# ---------- UI ----------
+# ======================================================
+# SIMPLE UI (FOR DEMO)
+# ======================================================
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """
@@ -82,8 +71,15 @@ def home():
   <title>Agentic AI Test Generator</title>
   <style>
     body { font-family: Arial; margin: 40px; }
-    input, textarea, button { width: 100%; margin: 10px 0; padding: 8px; }
-    textarea { height: 160px; white-space: pre; }
+    input, textarea, button {
+        width: 100%;
+        margin: 10px 0;
+        padding: 8px;
+    }
+    textarea {
+        height: 160px;
+        white-space: pre;
+    }
     .pass { color: green; font-weight: bold; }
     .fail { color: red; font-weight: bold; }
   </style>
@@ -103,10 +99,10 @@ def home():
 
 <button onclick="generate()">Generate Test Cases</button>
 
-<h3>Feature File</h3>
+<h3>Feature File (Gherkin)</h3>
 <textarea id="feature"></textarea>
 
-<h3>Step Definitions</h3>
+<h3>Step Definitions (Selenium)</h3>
 <textarea id="steps"></textarea>
 
 <h3>Validation</h3>
@@ -142,7 +138,7 @@ async function generate() {
 
   if (data.validationReport) {
     document.getElementById("validation").value =
-      data.validationReport.details || "";
+      JSON.stringify(data.validationReport, null, 2);
   }
 }
 </script>
