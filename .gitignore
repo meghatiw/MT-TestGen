@@ -15,3 +15,11 @@ __pycache__/
 **/*.pyc
 *.pyo
 *.pyd
+
+# Log files
+*.log
+orchestrator.log
+mcp_*.log
+**/*.log
+logs/
+.logs/
