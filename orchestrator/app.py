@@ -1,33 +1,46 @@
+import logging
+from datetime import datetime
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, Any
 
 from orchestrator.agent import TestGenerationAgent
 
+# ======================================================
+# LOGGING CONFIGURATION
+# ======================================================
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+    handlers=[
+        logging.FileHandler('orchestrator.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # ======================================================
 # FASTAPI APP
 # ======================================================
 app = FastAPI(title="Agentic AI Test Generator")
 
-
 # ======================================================
-# CORS
+# CORS (FIXED)
 # ======================================================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        "http://localhost:8000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # ======================================================
 # REQUEST MODEL
@@ -37,27 +50,38 @@ class GenerateRequest(BaseModel):
     uiRepo: str = ""
     e2eRepo: str = ""
 
-
 # ======================================================
 # HEALTH CHECK
 # ======================================================
 @app.get("/health")
 def health():
+    logger.info("Health check request received")
     return {"status": "UP"}
 
-
 # ======================================================
-# GENERATE TEST CASES
+# GENERATE TEST CASES (FIXED RESPONSE FLUSH)
 # ======================================================
 @app.post("/generate")
-def generate(req: GenerateRequest) -> Dict[str, Any]:
+def generate(req: GenerateRequest) -> JSONResponse:
     """
     End-to-end generation pipeline:
     Jira → Gherkin (LLM) → Selenium (LLM) → Validation
     """
-    result = TestGenerationAgent().run(req.dict())
-    return result
+    logger.info("=" * 80)
+    logger.info(f"NEW TEST GENERATION REQUEST | Timestamp: {datetime.now().isoformat()}")
+    logger.info(f"  JIRA URL: {req.jiraUrl}")
+    logger.info(f"  UI Repo: {req.uiRepo if req.uiRepo else 'NOT PROVIDED'}")
+    logger.info(f"  E2E Repo: {req.e2eRepo if req.e2eRepo else 'NOT PROVIDED'}")
+    logger.info("=" * 80)
 
+    result = TestGenerationAgent().run(req.dict())
+
+    logger.info(f"Generation completed with status: {result.get('status')}")
+    if result.get("status") == "ERROR":
+        logger.error(f"Error message: {result.get('message')}")
+
+    # IMPORTANT: force immediate JSON flush to browser
+    return JSONResponse(content=result)
 
 # ======================================================
 # SIMPLE UI (FOR DEMO)
