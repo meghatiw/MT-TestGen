@@ -1,90 +1,88 @@
 import logging
-from datetime import datetime
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Dict, Any
+import requests
 
 from orchestrator.agent import TestGenerationAgent
 
 # ======================================================
-# LOGGING CONFIGURATION
+# LOGGING
 # ======================================================
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
-    handlers=[
-        logging.FileHandler('orchestrator.log'),
-        logging.StreamHandler()
-    ]
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ======================================================
-# FASTAPI APP
+# APP
 # ======================================================
 app = FastAPI(title="Agentic AI Test Generator")
 
-# ======================================================
-# CORS (FIXED)
-# ======================================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3001",
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ======================================================
-# REQUEST MODEL
+# MODELS
 # ======================================================
 class GenerateRequest(BaseModel):
     jiraUrl: str
     uiRepo: str = ""
     e2eRepo: str = ""
 
-# ======================================================
-# HEALTH CHECK
-# ======================================================
-@app.get("/health")
-def health():
-    logger.info("Health check request received")
-    return {"status": "UP"}
+
+class PushExecuteRequest(BaseModel):
+    feature: str
+    selenium: str
+
 
 # ======================================================
-# GENERATE TEST CASES (FIXED RESPONSE FLUSH)
+# GENERATE (STEP 1)
 # ======================================================
 @app.post("/generate")
-def generate(req: GenerateRequest) -> JSONResponse:
-    """
-    End-to-end generation pipeline:
-    Jira → Gherkin (LLM) → Selenium (LLM) → Validation
-    """
-    logger.info("=" * 80)
-    logger.info(f"NEW TEST GENERATION REQUEST | Timestamp: {datetime.now().isoformat()}")
-    logger.info(f"  JIRA URL: {req.jiraUrl}")
-    logger.info(f"  UI Repo: {req.uiRepo if req.uiRepo else 'NOT PROVIDED'}")
-    logger.info(f"  E2E Repo: {req.e2eRepo if req.e2eRepo else 'NOT PROVIDED'}")
-    logger.info("=" * 80)
+async def generate(req: GenerateRequest):
 
-    result = TestGenerationAgent().run(req.dict())
+    result = await TestGenerationAgent().run(req.dict())
 
-    logger.info(f"Generation completed with status: {result.get('status')}")
-    if result.get("status") == "ERROR":
-        logger.error(f"Error message: {result.get('message')}")
-
-    # IMPORTANT: force immediate JSON flush to browser
     return JSONResponse(content=result)
 
 # ======================================================
-# SIMPLE UI (FOR DEMO)
+# PUSH ONLY (STEP 2)
+# ======================================================
+@app.post("/push-and-execute")
+def push_and_execute(req: PushExecuteRequest):
+
+    response = requests.post(
+        "http://localhost:8004/push-e2e",
+        json={
+            "feature_content": req.feature,
+            "selenium_code": req.selenium
+        }
+    )
+
+    return response.json()
+
+
+# ======================================================
+# POLL STATUS
+# ======================================================
+@app.get("/execution-status")
+def execution_status(branch: str):
+
+    resp = requests.get(
+        "http://localhost:8004/ci-status",
+        params={"branch": branch}
+    )
+
+    return resp.json()
+
+
+# ======================================================
+# SIMPLE UI
 # ======================================================
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -93,77 +91,91 @@ def home():
 <html>
 <head>
   <title>Agentic AI Test Generator</title>
-  <style>
-    body { font-family: Arial; margin: 40px; }
-    input, textarea, button {
-        width: 100%;
-        margin: 10px 0;
-        padding: 8px;
-    }
-    textarea {
-        height: 160px;
-        white-space: pre;
-    }
-    .pass { color: green; font-weight: bold; }
-    .fail { color: red; font-weight: bold; }
-  </style>
 </head>
 <body>
 
-<h2>Agentic AI – Automated Test Case Generator</h2>
+<h2>Agentic AI – Autonomous E2E Execution</h2>
 
-<label>JIRA Story URL</label>
-<input id="jiraUrl" placeholder="https://megha-tiwari.atlassian.net/browse/KAN-1">
+<label>JIRA URL</label>
+<input id="jiraUrl" style="width:100%">
 
-<label>UI Repo (optional)</label>
-<input id="uiRepo" placeholder="https://github.com/.../ui.git">
+<label>UI Repo</label>
+<input id="uiRepo" style="width:100%">
 
-<label>E2E Repo (optional)</label>
-<input id="e2eRepo" placeholder="https://github.com/.../tests.git">
+<button onclick="generate()">Generate</button>
+<button onclick="execute()">Execute</button>
 
-<button onclick="generate()">Generate Test Cases</button>
+<h3>Feature</h3>
+<textarea id="feature" style="width:100%;height:150px"></textarea>
 
-<h3>Feature File (Gherkin)</h3>
-<textarea id="feature"></textarea>
+<h3>Selenium</h3>
+<textarea id="steps" style="width:100%;height:150px"></textarea>
 
-<h3>Step Definitions (Selenium)</h3>
-<textarea id="steps"></textarea>
-
-<h3>Validation</h3>
-<textarea id="validation"></textarea>
+<h3>Status</h3>
+<div id="status"></div>
 
 <script>
+let feature = "";
+let steps = "";
+let branch = "";
+
 async function generate() {
-  document.getElementById("feature").value = "Generating...";
-  document.getElementById("steps").value = "";
-  document.getElementById("validation").value = "";
-
-  const payload = {
-    jiraUrl: document.getElementById("jiraUrl").value,
-    uiRepo: document.getElementById("uiRepo").value,
-    e2eRepo: document.getElementById("e2eRepo").value
-  };
-
   const res = await fetch("/generate", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      jiraUrl: document.getElementById("jiraUrl").value,
+      uiRepo: document.getElementById("uiRepo").value
+    })
   });
 
   const data = await res.json();
 
   if (data.generatedArtifacts) {
-    document.getElementById("feature").value =
-      data.generatedArtifacts.feature || "";
-
-    document.getElementById("steps").value =
-      data.generatedArtifacts.steps || "";
+    feature = data.generatedArtifacts.feature;
+    steps = data.generatedArtifacts.steps;
+    document.getElementById("feature").value = feature;
+    document.getElementById("steps").value = steps;
   }
+}
 
-  if (data.validationReport) {
-    document.getElementById("validation").value =
-      JSON.stringify(data.validationReport, null, 2);
-  }
+async function execute() {
+
+  const res = await fetch("/push-and-execute", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      feature: feature,
+      selenium: steps
+    })
+  });
+
+  const data = await res.json();
+  branch = data.branch;
+
+  document.getElementById("status").innerHTML =
+    "PR Created: <a target='_blank' href='" +
+    data.pull_request + "'>View PR</a><br>Running CI...";
+
+  poll();
+}
+
+async function poll() {
+  const interval = setInterval(async () => {
+    const res = await fetch("/execution-status?branch=" + branch);
+    const data = await res.json();
+
+    if (data.conclusion === "success") {
+      clearInterval(interval);
+      document.getElementById("status").innerHTML += "<br><b style='color:green'>PASSED</b>";
+    }
+
+    if (data.conclusion === "failure") {
+      clearInterval(interval);
+      document.getElementById("status").innerHTML += "<br><b style='color:red'>FAILED</b>";
+    }
+
+  }, 10000);
 }
 </script>
 

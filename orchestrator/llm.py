@@ -6,7 +6,7 @@ import time
 logger = logging.getLogger(__name__)
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL = "deepseek-coder:6.7b"
+MODEL = "deepseek-coder:1.3b"
 
 SYSTEM_PROMPT = (
     "You are a senior QA automation engineer. "
