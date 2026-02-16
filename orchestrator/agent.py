@@ -11,29 +11,24 @@ logger = logging.getLogger(__name__)
 class TestGenerationAgent:
 
     # ======================================================
-    # MAIN ENTRY – ASYNC GENERATION ONLY
+    # MAIN ENTRY – ASYNC GENERATION
     # ======================================================
     async def run(self, payload: dict):
 
         try:
             logger.info("Starting async test generation pipeline")
 
-            # --------------------------------------------------
-            # Fetch JIRA context
-            # --------------------------------------------------
+            # ---------------- JIRA CONTEXT ----------------
             jira_ctx = self._safe_get(
                 "http://localhost:8002/context",
                 {"jira_url": payload["jiraUrl"]}
             )
 
-            # Extract only relevant structured fields
             jira_summary = jira_ctx.get("summary", "")
             jira_description = jira_ctx.get("description", "")
             jira_ac = jira_ctx.get("acceptanceCriteria", "")
 
-            # --------------------------------------------------
-            # Fetch UI context
-            # --------------------------------------------------
+            # ---------------- UI CONTEXT ----------------
             ui_ctx = self._safe_get(
                 "http://localhost:8001/context",
                 {"repo_url": payload["uiRepo"]}
@@ -49,26 +44,21 @@ class TestGenerationAgent:
 
             logger.info(f"Loaded {len(ui_elements)} UI selectors")
 
-            # --------------------------------------------------
-            # STEP 1 – Generate Gherkin (Async)
-            # --------------------------------------------------
-            logger.info("Generating Gherkin (async)")
-
+            # ======================================================
+            # STEP 1 – GENERATE GHERKIN
+            # ======================================================
             gherkin = await asyncio.to_thread(
                 call_llm,
                 self._build_gherkin_prompt(
                     jira_summary,
                     jira_description,
-                    jira_ac,
-                    ui_elements
+                    jira_ac
                 )
             )
 
-            # --------------------------------------------------
-            # STEP 2 – Generate Selenium (Async)
-            # --------------------------------------------------
-            logger.info("Generating Selenium Step Definitions (async)")
-
+            # ======================================================
+            # STEP 2 – GENERATE BUY STEPS
+            # ======================================================
             selenium = await asyncio.to_thread(
                 call_llm,
                 self._build_selenium_prompt(
@@ -77,9 +67,9 @@ class TestGenerationAgent:
                 )
             )
 
-            # --------------------------------------------------
-            # Validate Selectors
-            # --------------------------------------------------
+            # ======================================================
+            # VALIDATION
+            # ======================================================
             validation = self._validate_against_ui(
                 selenium,
                 ui_elements
@@ -88,16 +78,15 @@ class TestGenerationAgent:
             critic = CriticAgent()
             review = critic.review(selenium, validation)
 
-            # Retry if critic suggests improvement
             if review.get("can_retry"):
-                logger.info("Retrying Selenium generation with critic feedback")
+                logger.info("Retrying Selenium generation with strict selector enforcement")
 
                 selenium = await asyncio.to_thread(
                     call_llm,
                     self._build_selenium_prompt(
                         gherkin,
                         ui_elements
-                    ) + "\n\nFix selector issues strictly. Do not invent any new selectors."
+                    ) + "\n\nSTRICT: Use ONLY provided selectors."
                 )
 
                 validation = self._validate_against_ui(
@@ -125,101 +114,79 @@ class TestGenerationAgent:
     # SAFE HTTP
     # ======================================================
     def _safe_get(self, url, params):
-        resp = requests.get(url, params=params, timeout=120)
+        resp = requests.get(url, params=params, timeout=90)
         if resp.status_code != 200:
             raise Exception(resp.text)
         return resp.json()
 
     # ======================================================
-    # STRICT PROMPT BUILDERS (ANTI-HALLUCINATION)
+    # PROMPT BUILDERS (CONTROLLED & LIGHTWEIGHT)
     # ======================================================
-    def _build_gherkin_prompt(
-        self,
-        summary,
-        description,
-        acceptance_criteria,
-        selectors
-    ):
+    def _build_gherkin_prompt(self, summary, description, acceptance_criteria):
 
         return f"""
-STRICT INSTRUCTIONS:
-
-You are generating automation ONLY for the provided UI repository.
-
-DO NOT invent:
-- Business domains
-- Page names
-- URLs
-- Buttons
-- Workflows
-
-Use ONLY the selectors provided.
-
-JIRA SUMMARY:
-{summary}
-
-JIRA DESCRIPTION:
-{description}
-
-ACCEPTANCE CRITERIA:
-{acceptance_criteria}
-
-AVAILABLE UI SELECTORS (MANDATORY):
-{selectors}
-
-Generate:
-- One Feature
-- Scenarios strictly derived from acceptance criteria
-- Valid Gherkin syntax only
-- No explanation
-"""
-
-    def _build_selenium_prompt(
-        self,
-        gherkin,
-        selectors
-    ):
-
-        return f"""
-Generate Selenium Java step definitions.
+Generate a SINGLE Gherkin Feature file.
 
 STRICT RULES:
-- Use ONLY By.cssSelector
-- Use ONLY selectors from allowed list
-- Do NOT invent selectors
-- Do NOT invent URLs
-- Do NOT invent IDs
-- Output ONLY valid Java code
-- No explanation text
+- Do NOT invent applications.
+- Do NOT invent URLs.
+- Use only acceptance criteria.
+- Valid BDD syntax only.
+- No explanations.
+
+Summary:
+{summary}
+
+Description:
+{description}
+
+Acceptance Criteria:
+{acceptance_criteria}
+"""
+
+    def _build_selenium_prompt(self, gherkin, selectors):
+
+        # Limit selector size to avoid LLM overload
+        selector_list = list(selectors.values())[:50]
+
+        return f"""
+Generate a COMPLETE Java class named BuySteps.
+
+STRICT RULES:
+- Package: steps
+- Use io.cucumber.java.en.*
+- Use WebDriverWait + ExpectedConditions
+- Use By.cssSelector ONLY
+- Use Hooks.driver
+- Use ScreenshotUtil.capture() in Then step
+- DO NOT invent selectors
+- Use ONLY from list below
+- Output ONLY Java code
 
 Gherkin:
 {gherkin}
 
 ALLOWED SELECTORS:
-{selectors}
+{selector_list}
 """
 
     # ======================================================
-    # VALIDATION (STRICT SELECTOR ENFORCEMENT)
+    # VALIDATION
     # ======================================================
     def _validate_against_ui(self, output, selectors_dict):
 
         allowed = set(selectors_dict.values())
-
-        used = set(
-            re.findall(r'By\.cssSelector\("([^"]+)"\)', output)
-        )
-
+        used = set(re.findall(r'By\.cssSelector\("([^"]+)"\)', output))
         invalid = list(used - allowed)
 
-        hallucinated_keywords = [
+        forbidden_keywords = [
             "Test Generator",
-            "Buy Test",
             "Sample App",
-            "Demo App"
+            "Demo App",
+            "example.com"
         ]
 
-        domain_leak = any(word in output for word in hallucinated_keywords)
+        domain_leak = any(word in output for word in forbidden_keywords)
 
         return {
             "status": "PASS" if not invalid and not domain_leak else "FAIL",

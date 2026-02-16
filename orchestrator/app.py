@@ -29,12 +29,14 @@ class PushExecuteRequest(BaseModel):
     feature: str
     selenium: str
 
+
 # ================= GENERATE =================
 @app.post("/generate")
 async def generate(req: GenerateRequest):
     logger.info(f"Received payload: {req.dict()}")
     result = await TestGenerationAgent().run(req.dict())
     return JSONResponse(content=result)
+
 
 # ================= PUSH =================
 @app.post("/push")
@@ -48,14 +50,6 @@ def push(req: PushExecuteRequest):
     )
     return response.json()
 
-# ================= STATUS =================
-@app.get("/status")
-def status(branch: str):
-    response = requests.get(
-        "http://localhost:8004/ci-status",
-        params={"branch": branch}
-    )
-    return response.json()
 
 # ================= UI =================
 @app.get("/", response_class=HTMLResponse)
@@ -70,8 +64,6 @@ def home():
     textarea { width: 100%; height: 160px; }
     input { width: 100%; margin-bottom: 10px; }
     button { padding: 8px 16px; margin-right: 10px; }
-    .pass { color: green; font-weight: bold; }
-    .fail { color: red; font-weight: bold; }
     .disabled { opacity: 0.5; cursor: not-allowed; }
   </style>
 </head>
@@ -82,55 +74,54 @@ def home():
 <label>JIRA URL</label>
 <input id="jiraUrl">
 
-<label>UI Repo (GitHub)</label>
+<label>UI Repo</label>
 <input id="uiRepo">
 
-<label>E2E Repo (GitHub)</label>
+<label>E2E Repo</label>
 <input id="e2eRepo">
 
 <br><br>
 
 <button onclick="generate()">Generate Test Cases</button>
-<button id="pushBtn" class="disabled" disabled onclick="push()"> PUSH TO E2E </button>
+<button id="pushBtn" disabled class="disabled" onclick="push()">Push to E2E</button>
 
 <h3>Feature</h3>
 <textarea id="feature"></textarea>
 
-<h3>Selenium</h3>
+<h3>Java</h3>
 <textarea id="steps"></textarea>
 
 <h3>Validation</h3>
 <textarea id="validation"></textarea>
 
-<h3>Execution Status</h3>
+<h3>Status</h3>
 <div id="status"></div>
 
 <script>
 
 let featureContent = "";
 let seleniumContent = "";
-let currentBranch = "";
 
-function enablePushButton() {
-    const btn = document.getElementById("pushBtn");
-    btn.disabled = false;
-    btn.classList.remove("disabled");
+function enablePush() {
+  const btn = document.getElementById("pushBtn");
+  btn.disabled = false;
+  btn.classList.remove("disabled");
 }
 
-function disablePushButton() {
-    const btn = document.getElementById("pushBtn");
-    btn.disabled = true;
-    btn.classList.add("disabled");
+function disablePush() {
+  const btn = document.getElementById("pushBtn");
+  btn.disabled = true;
+  btn.classList.add("disabled");
 }
 
 async function generate() {
 
-  disablePushButton();   // Always disable before new generation
+  disablePush();
 
-  document.getElementById("status").innerHTML = "";
   document.getElementById("feature").value = "Generating...";
   document.getElementById("steps").value = "";
   document.getElementById("validation").value = "";
+  document.getElementById("status").innerHTML = "";
 
   const res = await fetch("/generate", {
     method: "POST",
@@ -146,19 +137,17 @@ async function generate() {
 
   if (data.status === "SUCCESS") {
 
-    featureContent = data.generatedArtifacts.feature;
-    seleniumContent = data.generatedArtifacts.steps;
+    featureContent = data.generatedArtifacts.feature || "";
+    seleniumContent = data.generatedArtifacts.steps || "";
 
     document.getElementById("feature").value = featureContent;
     document.getElementById("steps").value = seleniumContent;
 
-    if (featureContent && seleniumContent) {
-        enablePushButton();   // Enable only if both exist
+    if (featureContent.length > 10 && seleniumContent.length > 10) {
+        enablePush();
     }
 
   } else {
-    document.getElementById("feature").value = "";
-    document.getElementById("steps").value = "";
     alert("Generation failed: " + data.message);
   }
 
@@ -175,7 +164,7 @@ async function push() {
     return;
   }
 
-  document.getElementById("status").innerHTML = "Pushing to Git...";
+  document.getElementById("status").innerHTML = "Pushing to E2E repo...";
 
   const res = await fetch("/push", {
     method: "POST",
@@ -187,35 +176,10 @@ async function push() {
   });
 
   const data = await res.json();
-  currentBranch = data.branch;
 
   document.getElementById("status").innerHTML =
     "PR Created: <a target='_blank' href='" +
-    data.pull_request + "'>View PR</a><br>Waiting for CI...";
-
-  pollStatus();
-}
-
-async function pollStatus() {
-
-  const interval = setInterval(async () => {
-
-    const res = await fetch("/status?branch=" + currentBranch);
-    const data = await res.json();
-
-    if (data.conclusion === "success") {
-      clearInterval(interval);
-      document.getElementById("status").innerHTML +=
-        "<br><span class='pass'>PASSED</span>";
-    }
-
-    if (data.conclusion === "failure") {
-      clearInterval(interval);
-      document.getElementById("status").innerHTML +=
-        "<br><span class='fail'>FAILED</span>";
-    }
-
-  }, 10000);
+    data.pull_request + "'>View PR</a>";
 }
 
 </script>
