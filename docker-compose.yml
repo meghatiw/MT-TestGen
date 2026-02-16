@@ -1,0 +1,68 @@
+version: '3.9'
+
+services:
+
+  orchestrator:
+    build: ./orchestrator
+    container_name: mt-orchestrator
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mcp-ui
+      - mcp-jira
+      - mcp-critic
+      - llm
+    environment:
+      - LLM_URL=http://llm:11434
+    networks:
+      - mt-network
+
+  mcp-ui:
+    build: ./mcp-ui
+    container_name: mt-mcp-ui
+    ports:
+      - "8001:8001"
+    networks:
+      - mt-network
+
+  mcp-jira:
+    build: ./mcp-jira
+    container_name: mt-mcp-jira
+    ports:
+      - "8002:8002"
+    networks:
+      - mt-network
+
+  mcp-critic:
+    build: ./mcp-critic
+    container_name: mt-mcp-critic
+    ports:
+      - "8003:8003"
+    networks:
+      - mt-network
+
+  llm:
+    image: ollama/ollama:latest
+    container_name: mt-llm
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - mt-network
+
+  e2e:
+    build: ./e2e-tests
+    container_name: mt-e2e
+    depends_on:
+      - orchestrator
+    networks:
+      - mt-network
+    command: mvn test -DbaseUrl=http://bank-ui:3000
+
+volumes:
+  ollama_data:
+
+networks:
+  mt-network:
+    driver: bridge
